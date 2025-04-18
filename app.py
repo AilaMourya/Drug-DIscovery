@@ -1,97 +1,65 @@
 import streamlit as st
 import pandas as pd
-from PIL import Image
-import subprocess
-import os
 import base64
 import pickle
 
-# Molecular descriptor calculator
-def desc_calc():
-    # Performs the descriptor calculation
-    bashCommand = "java -Xms2G -Xmx2G -Djava.awt.headless=true -jar ./PaDEL-Descriptor/PaDEL-Descriptor.jar -removesalt -standardizenitro -fingerprints -descriptortypes ./PaDEL-Descriptor/PubchemFingerprinter.xml -dir ./ -file descriptors_output.csv"
-    process = subprocess.Popen(bashCommand.split(), stdout=subprocess.PIPE)
-    output, error = process.communicate()
-    os.remove('alzheimers_molecule.smi')
-
-# File download
+# --- Helper: File download link ---
 def filedownload(df):
     csv = df.to_csv(index=False)
-    b64 = base64.b64encode(csv.encode()).decode()  # strings <-> bytes conversions
+    b64 = base64.b64encode(csv.encode()).decode()
     href = f'<a href="data:file/csv;base64,{b64}" download="prediction.csv">Download Predictions</a>'
     return href
 
-# Model building
-def build_model(input_data):
-    # Reads in saved regression model
-    load_model = pickle.load(open('bioactivity_prediction_model.pkl', 'rb'))
-    # Apply model to make predictions
-    prediction = load_model.predict(input_data)
-    st.header('**Prediction output**')
-    prediction_output = pd.Series(prediction, name='pIC50')
-    chembl_id = pd.Series(load_data.iloc[:, 1], name='chembl_id') # Use the first column for molecule names
-    df = pd.concat([chembl_id, prediction_output], axis=1)
+# --- Load model and make predictions ---
+def build_model(input_data, chembl_ids):
+    # Load pre-trained model
+    model = pickle.load(open('bioactivity_prediction_model.pkl', 'rb'))
     
-    df_sorted = df.sort_values(by='pIC50', ascending=False)
+    # Make predictions
+    predictions = model.predict(input_data)
     
-    # Display sorted results
-    st.write(df_sorted)
-    
-    # Download link for sorted predictions
-    st.markdown(filedownload(df_sorted), unsafe_allow_html=True)
-    
-  #  st.write(df)
-  #  st.markdown(filedownload(df), unsafe_allow_html=True)
+    # Output
+    st.subheader('🔬 Prediction Output')
+    results = pd.DataFrame({
+        'chembl_id': chembl_ids,
+        'pIC50': predictions
+    }).sort_values(by='pIC50', ascending=False)
 
+    st.write(results)
+    st.markdown(filedownload(results), unsafe_allow_html=True)
 
-# Page title
-st.markdown("""
-# Compounds Bioactivity Prediction
-""")
+# --- Page Title ---
+st.markdown("# 💊 Compounds Bioactivity Prediction")
 
-# Sidebar
-with st.sidebar.header('1. Upload your CSV or SMI data'):
-    uploaded_file = st.sidebar.file_uploader("Upload your input file", type=['txt', 'csv', 'smi'])
-    st.sidebar.markdown("""
+# --- Sidebar: File Upload ---
+with st.sidebar.header('📁 Upload Descriptor CSV'):
+    uploaded_file = st.sidebar.file_uploader("Upload CSV file with molecular descriptors", type=['csv'])
 
-""")
+# --- Main logic ---
+if uploaded_file is not None:
+    desc = pd.read_csv(uploaded_file)
 
-if st.sidebar.button('Predict'):
-    if uploaded_file is not None:
-        # Read the uploaded file
-        if uploaded_file.name.endswith('.csv'):
-            load_data = pd.read_csv(uploaded_file)
-        elif uploaded_file.name.endswith('.smi') or uploaded_file.name.endswith('.txt'):
-            load_data = pd.read_table(uploaded_file, sep=' ', header=None)
-        else:
-            st.error("Unsupported file format. Please upload a CSV, SMI, or TXT file.")
-            st.stop()
+    st.subheader('📄 Uploaded Descriptor Data')
+    st.write(desc)
+    st.write(f"Shape: {desc.shape}")
 
-        # Save the input data to a .smi file for PaDEL-Descriptor
-        load_data.to_csv('alzheimers_molecule.smi', sep='\t', header=False, index=False)
+    try:
+        # Read descriptor list used in model
+        descriptor_list = list(pd.read_csv('descriptor_list.csv').columns)
+        
+        # Extract required features
+        desc_subset = desc[descriptor_list]
 
-        st.header('**Original input data**')
-        st.write(load_data)
-
-        with st.spinner("Calculating descriptors..."):
-            desc_calc()
-
-        # Read in calculated descriptors and display the dataframe
-        st.header('**Calculated molecular descriptors**')
-        desc = pd.read_csv('descriptors_output.csv')
-        st.write(desc)
-        st.write(desc.shape)
-
-        # Read descriptor list used in previously built model
-        st.header('**Subset of descriptors from previously built models**')
-        Xlist = list(pd.read_csv('descriptor_list.csv').columns)
-        desc_subset = desc[Xlist]
+        # Display selected subset
+        st.subheader('✅ Subset of Descriptors Used by Model')
         st.write(desc_subset)
-        st.write(desc_subset.shape)
+        st.write(f"Shape: {desc_subset.shape}")
 
-        # Apply trained model to make prediction on query compounds
-        build_model(desc_subset)
-    else:
-        st.error("Please upload a file to proceed.")
+        # Predict
+        build_model(desc_subset, chembl_ids=desc.iloc[:, 0])  # assumes first column is chembl_id
+
+    except Exception as e:
+        st.error(f"⚠️ Error during processing: {e}")
 else:
-    st.info('Upload input data in the sidebar to start!')
+    st.info("👈 Upload your descriptor CSV file in the sidebar to begin.")
+
