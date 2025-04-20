@@ -1,105 +1,97 @@
 import streamlit as st
 import pandas as pd
+from PIL import Image
+import subprocess
+import os
 import base64
 import pickle
 
-# Page config
-st.set_page_config(page_title="Bioactivity Predictor", layout="wide")
+# Molecular descriptor calculator
+def desc_calc():
+    # Performs the descriptor calculation
+    bashCommand = "java -Xms2G -Xmx2G -Djava.awt.headless=true -jar ./PaDEL-Descriptor/PaDEL-Descriptor.jar -removesalt -standardizenitro -fingerprints -descriptortypes ./PaDEL-Descriptor/PubchemFingerprinter.xml -dir ./ -file descriptors_output.csv"
+    process = subprocess.Popen(bashCommand.split(), stdout=subprocess.PIPE)
+    output, error = process.communicate()
+    os.remove('alzheimers_molecule.smi')
 
-# Custom CSS
-st.markdown("""
-<style>
-/* Background image */
-.stApp {
-    background-image: url("https://images.unsplash.com/photo-1581090700227-1e8e1f05c53b");
-    background-size: cover;
-    background-position: center;
-    background-attachment: fixed;
-}
-
-/* Transparent cards */
-.main > div {
-    background-color: rgba(255, 255, 255, 0.92);
-    padding: 2rem;
-    border-radius: 1rem;
-    box-shadow: 0 0 10px rgba(0,0,0,0.15);
-}
-
-/* Headings and fonts */
-h1, h2, h3 {
-    color: #003366;
-}
-a {
-    color: #0044cc;
-    font-weight: bold;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# File downloader
+# File download
 def filedownload(df):
     csv = df.to_csv(index=False)
-    b64 = base64.b64encode(csv.encode()).decode()
-    href = f'<a href="data:file/csv;base64,{b64}" download="prediction.csv">📥 Download Predictions</a>'
+    b64 = base64.b64encode(csv.encode()).decode()  # strings <-> bytes conversions
+    href = f'<a href="data:file/csv;base64,{b64}" download="prediction.csv">Download Predictions</a>'
     return href
 
-# Model builder
-def build_model(input_data, chembl_ids):
-    model = pickle.load(open('bioactivity_prediction_model.pkl', 'rb'))
-    predictions = model.predict(input_data)
+# Model building
+def build_model(input_data):
+    # Reads in saved regression model
+    load_model = pickle.load(open('bioactivity_prediction_model.pkl', 'rb'))
+    # Apply model to make predictions
+    prediction = load_model.predict(input_data)
+    st.header('**Prediction output**')
+    prediction_output = pd.Series(prediction, name='pIC50')
+    chembl_id = pd.Series(load_data.iloc[:, 1], name='chembl_id') # Use the first column for molecule names
+    df = pd.concat([chembl_id, prediction_output], axis=1)
     
-    st.subheader("🔬 Prediction Results")
-    results = pd.DataFrame({
-        'chembl_id': chembl_ids,
-        'pIC50': predictions
-    }).sort_values(by='pIC50', ascending=False)
+    df_sorted = df.sort_values(by='pIC50', ascending=False)
+    
+    # Display sorted results
+    st.write(df_sorted)
+    
+    # Download link for sorted predictions
+    st.markdown(filedownload(df_sorted), unsafe_allow_html=True)
+    
+  #  st.write(df)
+  #  st.markdown(filedownload(df), unsafe_allow_html=True)
 
-    st.dataframe(results, use_container_width=True)
-    st.markdown(filedownload(results), unsafe_allow_html=True)
 
-# Logo + title
-col1, col2 = st.columns([1, 8])
-with col1:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/8/8d/DNA_icon.png", width=80)
-with col2:
-    st.markdown("<h1 style='padding-top: 0.5rem;'>💊 Molecular Bioactivity Predictor</h1>", unsafe_allow_html=True)
+# Page title
+st.markdown("""
+# Compounds Bioactivity Prediction
+""")
 
-st.markdown("<h4>Upload your molecular descriptors to predict bioactivity (pIC50)</h4>", unsafe_allow_html=True)
+# Sidebar
+with st.sidebar.header('1. Upload your CSV or SMI data'):
+    uploaded_file = st.sidebar.file_uploader("Upload your input file", type=['txt', 'csv', 'smi'])
+    st.sidebar.markdown("""
 
-# Sidebar upload
-with st.sidebar:
-    st.header("📁 Upload Data")
-    uploaded_file = st.file_uploader("Upload `.csv` or `.txt` file (precomputed descriptors)", type=['csv', 'txt'])
+""")
 
-# Main logic
-if uploaded_file is not None:
-    # Try reading CSV or TXT
-    if uploaded_file.name.endswith('.csv'):
-        desc = pd.read_csv(uploaded_file)
-    elif uploaded_file.name.endswith('.txt'):
-        desc = pd.read_csv(uploaded_file, sep='\t')
-    else:
-        st.error("Unsupported format.")
-        st.stop()
+if st.sidebar.button('Predict'):
+    if uploaded_file is not None:
+        # Read the uploaded file
+        if uploaded_file.name.endswith('.csv'):
+            load_data = pd.read_csv(uploaded_file)
+        elif uploaded_file.name.endswith('.smi') or uploaded_file.name.endswith('.txt'):
+            load_data = pd.read_table(uploaded_file, sep=' ', header=None)
+        else:
+            st.error("Unsupported file format. Please upload a CSV, SMI, or TXT file.")
+            st.stop()
 
-    with st.expander("📄 View Uploaded Descriptor Data", expanded=False):
+        # Save the input data to a .smi file for PaDEL-Descriptor
+        load_data.to_csv('alzheimers_molecule.smi', sep='\t', header=False, index=False)
+
+        st.header('**Original input data**')
+        st.write(load_data)
+
+        with st.spinner("Calculating descriptors..."):
+            desc_calc()
+
+        # Read in calculated descriptors and display the dataframe
+        st.header('**Calculated molecular descriptors**')
+        desc = pd.read_csv('descriptors_output.csv')
         st.write(desc)
-        st.caption(f"Shape: {desc.shape}")
+        st.write(desc.shape)
 
-    try:
-        # Load model descriptor list
-        descriptor_list = list(pd.read_csv('descriptor_list.csv').columns)
-        desc_subset = desc[descriptor_list]
+        # Read descriptor list used in previously built model
+        st.header('**Subset of descriptors from previously built models**')
+        Xlist = list(pd.read_csv('descriptor_list.csv').columns)
+        desc_subset = desc[Xlist]
+        st.write(desc_subset)
+        st.write(desc_subset.shape)
 
-        with st.expander("✅ Model Input Descriptors", expanded=False):
-            st.write(desc_subset)
-            st.caption(f"Shape: {desc_subset.shape}")
-
-        build_model(desc_subset, chembl_ids=desc.iloc[:, 0])
-
-    except Exception as e:
-        st.error(f"Error during processing: {e}")
-
+        # Apply trained model to make prediction on query compounds
+        build_model(desc_subset)
+    else:
+        st.error("Please upload a file to proceed.")
 else:
-    st.info("👈 Upload a descriptor file to begin.")
-
+    st.info('Upload input data in the sidebar to start!')
